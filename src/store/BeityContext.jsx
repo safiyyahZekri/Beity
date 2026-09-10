@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useMemo, useReducer, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
 import * as seed from '../data/seed.js'
 import { asBilingual } from '../i18n/translations.js'
+import { api } from '../lib/api.js'
 
 const BeityContext = createContext(null)
 
@@ -352,6 +353,48 @@ function reducer(state, action) {
       }
     }
 
+    case 'LOAD_BACKEND_DATA': {
+      const { cooks, dishes, orders, requests } = action.payload
+      return {
+        ...state,
+        cooks: cooks && cooks.length ? cooks : state.cooks,
+        dishes: dishes && dishes.length ? dishes : state.dishes,
+        orders: orders && orders.length ? orders : state.orders,
+        cookOrders: orders && orders.length ? orders : state.cookOrders,
+        requests: requests && requests.length ? requests : state.requests,
+      }
+    }
+
+    case 'SYNC_THREAD': {
+      const { thread } = action
+      if (!thread?.id) return state
+      return {
+        ...state,
+        threads: {
+          ...state.threads,
+          [thread.id]: {
+            ...(state.threads[thread.id] || {}),
+            ...thread,
+          },
+        },
+      }
+    }
+
+    case 'SYNC_THREAD_MESSAGES': {
+      const { threadId, messages } = action
+      const current = state.threads[threadId]
+      return {
+        ...state,
+        threads: {
+          ...state.threads,
+          [threadId]: {
+            ...(current || { id: threadId }),
+            messages,
+          },
+        },
+      }
+    }
+
     case 'OPEN_CHAT':
       return { ...state, activeThreadId: action.threadId }
 
@@ -366,48 +409,204 @@ function reducer(state, action) {
 const clockLabel = () =>
   new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 
-// Canned replies so a thread feels alive without a second browser window.
-const AUTO_REPLIES = {
-  cook: [
-    'Noted — I’ll adjust that before I start cooking.',
-    'That works for me. I’ll have it ready and packed hot.',
-    'Of course. I’ll keep the sauce on the side so you can add it yourself.',
-  ],
-  craver: [
-    'Sounds good to me, thank you!',
-    'Perfect — I’ll be home from 7pm onwards.',
-    'That works. Looking forward to it!',
-  ],
-}
-
 export function BeityProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, undefined, buildInitialState)
-  const replyCounts = useRef({})
+
+  // 1. Initial load from backend (replaces local seed data)
+  useEffect(() => {
+    let cancelled = false
+    async function loadBackend() {
+      try {
+        const [cooks, dishes, orders, requests] = await Promise.all([
+          api.getCooks().catch(() => null),
+          api.getDishes().catch(() => null),
+          api.getOrders().catch(() => null),
+          api.getRequests().catch(() => null),
+        ])
+        if (!cancelled) {
+          dispatch({
+            type: 'LOAD_BACKEND_DATA',
+            payload: { cooks, dishes, orders, requests },
+          })
+        }
+      } catch (err) {
+        console.warn('Initial backend load error:', err)
+      }
+    }
+    loadBackend()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 2. Poll thread messages when chat drawer is open
+  useEffect(() => {
+    if (!state.activeThreadId) return
+
+    api
+      .getThread(state.activeThreadId)
+      .then((t) => {
+        if (t) dispatch({ type: 'SYNC_THREAD', thread: t })
+      })
+      .catch(() => {})
+
+    const interval = setInterval(async () => {
+      try {
+        const msgs = await api.getThreadMessages(state.activeThreadId)
+        if (msgs && msgs.length) {
+          dispatch({ type: 'SYNC_THREAD_MESSAGES', threadId: state.activeThreadId, messages: msgs })
+        }
+      } catch {}
+    }, 2500)
+
+    return () => clearInterval(interval)
+  }, [state.activeThreadId])
+
+  const currentCook = useMemo(
+    () => state.cooks.find((c) => c.id === state.session.userId) || null,
+    [state.cooks, state.session.userId],
+  )
+  const currentCraver = useMemo(
+    () => state.cravers.find((c) => c.id === state.session.userId) || null,
+    [state.cravers, state.session.userId],
+  )
 
   const sendMessage = useCallback(
-    (threadId, message, { autoReply = true } = {}) => {
+    (threadId, message) => {
       dispatch({ type: 'SEND_MESSAGE', threadId, message, at: clockLabel() })
-      if (!autoReply) return
-      const other = message.from === 'cook' ? 'craver' : 'cook'
-      const bank = AUTO_REPLIES[other]
-      const n = replyCounts.current[threadId] || 0
-      replyCounts.current[threadId] = n + 1
-      setTimeout(() => {
-        dispatch({
-          type: 'SEND_MESSAGE',
-          threadId,
-          at: clockLabel(),
-          message: { type: 'text', from: other, body: bank[n % bank.length] },
+      const senderName =
+        message.from === 'cook'
+          ? (typeof currentCook?.name === 'object' ? currentCook.name.en : currentCook?.name) || 'Cook'
+          : currentCraver?.name || 'Craver'
+
+      api
+        .sendMessage(threadId, {
+          from: message.from,
+          senderName,
+          type: message.type || 'text',
+          body: message.body || '',
+          price: message.price,
+          date: message.date,
+          note: message.note,
         })
-      }, 1500)
+        .catch((err) => console.error('Failed to sync message to backend:', err))
+    },
+    [dispatch, currentCook, currentCraver],
+  )
+
+  const respondProposal = useCallback(
+    (threadId, messageId, status) => {
+      dispatch({ type: 'RESPOND_PROPOSAL', threadId, messageId, status })
+      api
+        .respondProposal(threadId, messageId, status)
+        .catch((err) => console.error('Failed to update proposal on backend:', err))
     },
     [dispatch],
   )
 
+  const placeOrder = useCallback(
+    (dishId, cookId, qty, recurring = false, recurringDay = null) => {
+      const craver = state.cravers.find((c) => c.id === state.session.userId) || state.cravers[0]
+      dispatch({
+        type: 'PLACE_ORDER',
+        dishId,
+        cookId,
+        qty,
+        recurring,
+        recurringDay,
+        craverId: state.session.userId,
+      })
+      api
+        .placeOrder({
+          dishId,
+          cookId,
+          craverId: state.session.userId || seed.DEMO_CRAVER_ID,
+          craverName: craver?.name || 'Craver',
+          qty,
+          recurring,
+          recurringDay,
+        })
+        .catch((err) => console.error('Failed to sync order with backend:', err))
+    },
+    [state.session.userId, state.cravers],
+  )
+
+  const setOrderStatus = useCallback((id, status) => {
+    dispatch({ type: 'SET_ORDER_STATUS', id, status })
+    api.setOrderStatus(id, status).catch((err) => console.error('Failed to update order status on backend:', err))
+  }, [])
+
+  const rateOrder = useCallback(
+    (id, taste, onTime, text) => {
+      const order = state.orders.find((o) => o.id === id)
+      const craver = state.cravers.find((c) => c.id === state.session.userId) || state.cravers[0]
+      dispatch({ type: 'RATE_ORDER', id, taste, onTime, text })
+      api
+        .createReview({
+          orderId: id,
+          dishId: order?.dishId,
+          cookId: order?.cookId,
+          craverId: state.session.userId,
+          craverName: craver?.name || 'Craver',
+          taste,
+          onTime,
+          text,
+        })
+        .catch((err) => console.error('Failed to submit review to backend:', err))
+    },
+    [state.orders, state.session.userId, state.cravers],
+  )
+
+  const addRequest = useCallback(
+    (payload) => {
+      const craver = state.cravers.find((c) => c.id === state.session.userId) || state.cravers[0]
+      dispatch({ type: 'ADD_REQUEST', craverId: state.session.userId, ...payload })
+      api
+        .addRequest({
+          craverId: state.session.userId || seed.DEMO_CRAVER_ID,
+          craverName: craver?.name || 'Craver',
+          ...payload,
+        })
+        .catch((err) => console.error('Failed to sync special request to backend:', err))
+    },
+    [state.session.userId, state.cravers],
+  )
+
+  const setRequestStatus = useCallback(
+    (id, status) => {
+      dispatch({ type: 'SET_REQUEST_STATUS', id, status, cookId: state.session.userId })
+      api
+        .setRequestStatus(id, status, state.session.userId)
+        .catch((err) => console.error('Failed to update request status on backend:', err))
+    },
+    [state.session.userId],
+  )
+
+  const addDish = useCallback(
+    (payload) => {
+      dispatch({ type: 'ADD_DISH', cookId: state.session.userId, payload })
+      api
+        .addDish({
+          cookId: state.session.userId || seed.DEMO_COOK_ID,
+          ...payload,
+        })
+        .catch((err) => console.error('Failed to add dish to backend:', err))
+    },
+    [state.session.userId],
+  )
+
+  const signupCook = useCallback((payload) => {
+    dispatch({ type: 'SIGNUP_COOK', payload })
+    api.signupCook(payload).catch((err) => console.error('Failed to sync cook signup to backend:', err))
+  }, [])
+
+  const signupCraver = useCallback((payload) => {
+    dispatch({ type: 'SIGNUP_CRAVER', payload })
+    api.signupCraver(payload).catch((err) => console.error('Failed to sync craver signup to backend:', err))
+  }, [])
+
   const value = useMemo(() => {
     const { session } = state
-    const currentCook = state.cooks.find((c) => c.id === session.userId) || null
-    const currentCraver = state.cravers.find((c) => c.id === session.userId) || null
 
     return {
       ...state,
@@ -426,31 +625,34 @@ export function BeityProvider({ children }) {
       logout: () => dispatch({ type: 'LOGOUT' }),
       setLang: (lang) => dispatch({ type: 'SET_LANG', lang }),
       resetDemo: () => dispatch({ type: 'RESET' }),
-      signupCraver: (payload) => dispatch({ type: 'SIGNUP_CRAVER', payload }),
-      signupCook: (payload) => dispatch({ type: 'SIGNUP_COOK', payload }),
-      placeOrder: (dishId, cookId, qty, recurring = false, recurringDay = null) =>
-        dispatch({
-          type: 'PLACE_ORDER',
-          dishId,
-          cookId,
-          qty,
-          recurring,
-          recurringDay,
-          craverId: session.userId,
-        }),
-      setOrderStatus: (id, status) => dispatch({ type: 'SET_ORDER_STATUS', id, status }),
-      rateOrder: (id, taste, onTime, text) => dispatch({ type: 'RATE_ORDER', id, taste, onTime, text }),
-      addRequest: (payload) => dispatch({ type: 'ADD_REQUEST', craverId: session.userId, ...payload }),
-      setRequestStatus: (id, status) =>
-        dispatch({ type: 'SET_REQUEST_STATUS', id, status, cookId: session.userId }),
-      addDish: (payload) => dispatch({ type: 'ADD_DISH', cookId: session.userId, payload }),
+      signupCraver,
+      signupCook,
+      placeOrder,
+      setOrderStatus,
+      rateOrder,
+      addRequest,
+      setRequestStatus,
+      addDish,
       sendMessage,
-      respondProposal: (threadId, messageId, status) =>
-        dispatch({ type: 'RESPOND_PROPOSAL', threadId, messageId, status }),
+      respondProposal,
       openChat: (threadId) => dispatch({ type: 'OPEN_CHAT', threadId }),
       closeChat: () => dispatch({ type: 'CLOSE_CHAT' }),
     }
-  }, [state, sendMessage])
+  }, [
+    state,
+    currentCook,
+    currentCraver,
+    signupCraver,
+    signupCook,
+    placeOrder,
+    setOrderStatus,
+    rateOrder,
+    addRequest,
+    setRequestStatus,
+    addDish,
+    sendMessage,
+    respondProposal,
+  ])
 
   return <BeityContext.Provider value={value}>{children}</BeityContext.Provider>
 }

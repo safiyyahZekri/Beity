@@ -104,11 +104,12 @@ export default function ChatDrawer() {
             <ProposeForm
               onCancel={() => setProposing(false)}
               onSubmit={(payload) => {
-                sendMessage(
-                  thread.id,
-                  { type: 'proposal', from: side, status: 'pending', ...payload },
-                  { autoReply: false },
-                )
+                sendMessage(thread.id, {
+                  type: 'proposal',
+                  from: side,
+                  status: 'pending',
+                  ...payload,
+                })
                 setProposing(false)
               }}
             />
