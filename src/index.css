@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-cream-200 text-brown-600 font-sans;
+  }
+
+  /* Knewave has no real bold; give the wordmark a touch of optical weight. */
+  .font-display {
+    letter-spacing: 0.01em;
+  }
+
+  ::selection {
+    background: #f0d492;
+    color: #4a2e1c;
+  }
+
+  /* Warm, slim scrollbars so inner panels don't look like plain browser chrome. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d6c2a2 transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #dfcdb0;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #c9b29c;
+    background-clip: content-box;
+  }
+
+  :focus-visible {
+    outline: 2px solid #b8452f;
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  /* Native date control: keep the browser's calendar, dress it like our inputs. */
+  input[type='date'] {
+    cursor: pointer;
+  }
+  /* Grey out the mm/dd/yyyy hint until a date is actually chosen. */
+  input[type='date']:not(:focus):invalid::-webkit-datetime-edit {
+    color: #c9b29c;
+  }
+  input[type='date']::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.5;
+    padding: 3px;
+    border-radius: 5px;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+    /* Warm the stock blue-grey glyph towards terracotta. */
+    filter: sepia(1) saturate(3.5) hue-rotate(-20deg) brightness(0.75);
+  }
+  input[type='date']:hover::-webkit-calendar-picker-indicator,
+  input[type='date']:focus::-webkit-calendar-picker-indicator {
+    opacity: 1;
+    background-color: #f5d9d1;
+  }
+}
+
+@layer utilities {
+  /* Feathered top/bottom edges for the landing-page blur stripe. */
+  .stripe-feather {
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      black 18%,
+      black 82%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      black 18%,
+      black 82%,
+      transparent 100%
+    );
+  }
+
+  .text-shadow-warm {
+    text-shadow: 0 3px 18px rgba(54, 31, 18, 0.55), 0 1px 2px rgba(54, 31, 18, 0.4);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+}
