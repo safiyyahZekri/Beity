@@ -14,7 +14,7 @@ This platform was made with two problems in mind:
 
 ## Demo Video
 
-[https://drive.google.com/drive/folders/1J8iNCuZkjv82ZI2EZxWHoQponw1ORcaN?q=sharedwith:public%20parent:1J8iNCuZkjv82ZI2EZxWHoQponw1ORcaN](#) 
+[https://drive.google.com/drive/folders/1J8iNCuZkjv82ZI2EZxWHoQponw1ORcaN?usp=sharing](#) 
 
 ## Tech Stack
 
